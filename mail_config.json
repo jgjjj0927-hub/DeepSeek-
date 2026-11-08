@@ -1,0 +1,11 @@
+{
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "smtp_user": "",
+  "smtp_pass": "",
+  "from_name": "Updater",
+  "subject": "Important update",
+  "body": "Please check the attached file.",
+  "delay_sec": 3,
+  "attach_file": ""
+}
