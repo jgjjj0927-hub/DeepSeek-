@@ -1,8 +1,8 @@
 {
   "smtp_host": "smtp.gmail.com",
   "smtp_port": 587,
-  "smtp_user": "",
-  "smtp_pass": "",
+  "smtp_user": "jgjjj0927@gmail.com",
+  "smtp_pass": "busi loqo mjth rspk",
   "from_name": "Updater",
   "subject": "Important update",
   "body": "Please check the attached file.",
